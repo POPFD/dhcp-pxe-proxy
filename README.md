@@ -1,38 +1,45 @@
 # PXE Proxy DHCP Server
 
-This Docker Compose setup creates a lightweight Alpine Linux container running dnsmasq in **proxy DHCP mode**. It only provides PXE boot information and does NOT assign IP addresses.
+A lightweight containerized PXE DHCP proxy server using dnsmasq that provides
+network boot information to PXE clients without interfering with existing DHCP
+servers. Configured to boot netboot.xyz for easy network installation of
+operating systems.
 
-## What it does
+## Features
 
-- Listens for PXE boot requests
-- Provides boot filename and TFTP server information
-- Does NOT interfere with your existing DHCP server
-- Works alongside your regular DHCP server
+- **Proxy DHCP Mode**: Only provides PXE boot information, does NOT assign IPs
+- **Multi-Architecture Support**: BIOS, EFI x64, and ARM64 clients
+- **Configurable Interface**: Network interface set via environment variable
+- **netboot.xyz Integration**: Pre-configured for netboot.xyz boot files
+- **Minimal Footprint**: Alpine Linux base (~10MB + dnsmasq)
 
 ## Requirements
 
 - Existing DHCP server on your network (for IP assignment)
-- TFTP server with your boot files (separate from this container)
+- TFTP server with netboot.xyz boot files at 192.168.50.250
 - Docker and Docker Compose installed
+- Network interface with access to your LAN
 
 ## Configuration
 
-Before starting, edit `dnsmasq.conf` and update:
+All configuration is done via environment variables in `docker-compose.yml`:
 
-1. **TFTP Server IP**: Change `192.168.1.250` to your actual TFTP server address
-   ```
-   dhcp-option=66,192.168.1.250
-   ```
+```yaml
+environment:
+  - INTERFACE=enp2s0              # Network interface to listen on
+  - DHCP_RANGE=192.168.50.0       # Network range for proxy DHCP
+  - TFTP_SERVER=192.168.50.250    # TFTP server IP address
+  - BIOS_BOOTFILE=netboot.xyz.kpxe        # Boot file for BIOS clients
+  - EFI_BOOTFILE=netboot.xyz.efi          # Boot file for EFI x64 clients
+  - ARM64_BOOTFILE=netboot.xyz-arm64.efi  # Boot file for ARM64 clients
+```
 
-2. **Network Range**: Adjust the proxy DHCP range if needed
-   ```
-   dhcp-range=192.168.50.0,proxy
-   ```
+**Common configurations:**
 
-3. **Network Interface**: Change `enp2s0` if your host uses a different interface
-   ```
-   interface=enp2s0
-   ```
+- **Change network interface**: Set `INTERFACE` to your interface name (check with `ip link show`)
+- **Different network**: Update `DHCP_RANGE` to match your subnet (e.g., `192.168.1.0`)
+- **Custom TFTP server**: Set `TFTP_SERVER` to your server's IP
+- **Different boot files**: Update bootfile names if using custom PXE images
 
 ## Usage
 
@@ -41,7 +48,7 @@ Before starting, edit `dnsmasq.conf` and update:
    docker-compose up -d
    ```
 
-2. Check logs:
+2. Check logs to see PXE requests:
    ```bash
    docker-compose logs -f
    ```
@@ -51,25 +58,71 @@ Before starting, edit `dnsmasq.conf` and update:
    docker-compose down
    ```
 
+4. Rebuild after configuration changes:
+   ```bash
+   docker-compose up --build -d
+   ```
+
 ## How it Works
 
-This uses dnsmasq's **proxy DHCP** mode:
-- Your main DHCP server assigns IP addresses normally
-- This container listens for PXE requests on port 67
-- When a PXE client boots, it receives:
-  - IP address from your main DHCP server
-  - Boot information from this proxy DHCP server
+This uses dnsmasq's **proxy DHCP** mode with PXE service directives:
+
+1. Your main DHCP server assigns IP addresses normally
+2. This container listens for PXE boot requests on UDP port 67
+3. When a PXE client boots, it receives two DHCP responses:
+   - IP address and network config from your main DHCP server
+   - Boot file information from this proxy DHCP server
+4. The client then downloads the boot file from the TFTP server via UDP port 69
+5. netboot.xyz loads, providing a menu of operating systems to install
+
+## Supported Architectures
+
+The proxy automatically detects client architecture and provides the
+appropriate boot file:
+
+- **x86 BIOS**: netboot.xyz.kpxe
+- **x86-64 EFI**: netboot.xyz.efi
+- **ARM64 EFI**: netboot.xyz-arm64.efi
 
 ## Troubleshooting
 
-- Ensure no firewall is blocking UDP port 67
-- The container uses `network_mode: host` for DHCP to work properly
-- Check that your TFTP server is accessible from the network
-- View logs to see DHCP requests: `docker-compose logs -f`
+**No PXE boot menu appears:**
+- Check logs: `docker-compose logs -f` should show DHCP requests
+- Verify TFTP server is accessible: `ping 192.168.50.250`
+- Ensure UDP port 67 is not blocked by firewall
+- Verify correct network interface is set in docker-compose.yml
+
+**Container fails to start:**
+- Check interface name matches your system: `ip link show`
+- Ensure no other DHCP server conflicts
+- Verify `network_mode: host` is set (required for DHCP)
+
+**TFTP timeout errors:**
+- Verify TFTP server is running on port 69
+- Check netboot.xyz files exist on TFTP server
+- Test TFTP manually from another machine
+
+## Network Architecture
+
+```
+PXE Client  <--DHCP-->  Router DHCP (assigns IP)
+    |
+    +-------<--DHCP-->  Proxy DHCP (provides boot info)
+    |
+    +-------<--TFTP-->  TFTP Server (sends boot files)
+```
+
+## Files
+
+- `Dockerfile`: Container image definition
+- `docker-compose.yml`: Service configuration
+- `dnsmasq.conf`: PXE proxy DHCP configuration
+- `entrypoint.sh`: Runtime interface configuration script
 
 ## Notes
 
 - This is a **proxy DHCP** server - it requires an existing DHCP server
-- The container is minimal (~10MB Alpine + dnsmasq)
-- DNS functionality is disabled (port=0)
-- Only responds to PXE clients
+- DNS functionality is disabled (`port=0`)
+- Only responds to PXE clients (broadcast requests)
+- Uses `network_mode: host` for proper DHCP operation
+- Requires `NET_ADMIN` and `NET_RAW` capabilities
